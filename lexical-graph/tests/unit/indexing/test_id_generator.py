@@ -4,8 +4,8 @@
 import pytest
 
 
-class TestCreateChunkId:
-    """Tests for IdGenerator.create_chunk_id method."""
+class TestCreateChunkIdBackwardCompatible:
+    """Tests for IdGenerator.create_chunk_id method in backward compatible mode (no delimiter)."""
 
     def test_create_chunk_id_basic(self, default_id_gen):
         """Test basic chunk ID creation."""
@@ -29,51 +29,29 @@ class TestCreateChunkId:
 
         assert id1 == id2
 
-    def test_create_chunk_id_no_boundary_collision(self, default_id_gen):
+    def test_create_chunk_id_boundary_collision_exists(self, default_id_gen):
         """
-        Test that different (text, metadata) pairs with same concatenation don't collide.
+        Test that boundary collisions can occur in backward compatible mode.
 
-        This is a regression test for issue #107:
-        Previously, ("hello", "world") and ("hell", "oworld") would both hash
-        "helloworld" and produce identical IDs. With the delimiter fix, they
-        should produce different IDs.
+        In the old behavior (without delimiter), different (text, metadata) pairs
+        with same concatenation will collide. This is expected for backward compatibility.
         """
         source_id = "aws::12345678:abcd"
 
-        # These would collide without a delimiter: "hello" + "world" = "helloworld"
+        # These WILL collide without a delimiter: "hello" + "world" = "helloworld"
         id1 = default_id_gen.create_chunk_id(source_id, "hello", "world")
 
-        # This would also produce "helloworld" without delimiter
+        # This will also produce "helloworld" without delimiter
         id2 = default_id_gen.create_chunk_id(source_id, "hell", "oworld")
 
-        # With the fix, they should be different
-        assert id1 != id2, (
-            "Chunk IDs should differ for ('hello', 'world') vs ('hell', 'oworld'). "
-            "Boundary collision detected - this means the delimiter fix is not working."
+        # In backward compatible mode, they are the same (boundary collision exists)
+        assert id1 == id2, (
+            "In backward compatible mode (without delimiter), boundary collisions are expected. "
+            "Enable use_chunk_id_delimiter=True for collision-resistant hashing."
         )
 
-    def test_create_chunk_id_boundary_collision_more_cases(self, default_id_gen):
-        """Test additional boundary collision cases."""
-        source_id = "aws::12345678:abcd"
-
-        # Test various boundary shift patterns
-        test_cases = [
-            (("abc", "def"), ("ab", "cdef")),
-            (("abc", "def"), ("abcd", "ef")),
-            (("", "abcdef"), ("abc", "def")),
-            (("abcdef", ""), ("abc", "def")),
-            (("a", "bcdef"), ("abcde", "f")),
-        ]
-
-        for (text1, meta1), (text2, meta2) in test_cases:
-            id1 = default_id_gen.create_chunk_id(source_id, text1, meta1)
-            id2 = default_id_gen.create_chunk_id(source_id, text2, meta2)
-            assert id1 != id2, (
-                f"Boundary collision: ({text1!r}, {meta1!r}) vs ({text2!r}, {meta2!r})"
-            )
-
     def test_create_chunk_id_empty_strings(self, default_id_gen):
-        """Test chunk ID creation with empty strings."""
+        """Test chunk ID creation with empty strings in backward compatible mode."""
         source_id = "aws::12345678:abcd"
 
         # Empty text
@@ -84,7 +62,8 @@ class TestCreateChunkId:
         id2 = default_id_gen.create_chunk_id(source_id, "text", "")
         assert id2.startswith(source_id + ":")
 
-        # Both should be different (delimiter separates them)
+        # In backward compatible mode, ("", "metadata") and ("", "metadata") concatenate differently
+        # than ("text", ""), so they should be different
         assert id1 != id2
 
     def test_create_chunk_id_different_source_ids(self, default_id_gen):
@@ -98,6 +77,126 @@ class TestCreateChunkId:
         assert id1 != id2
         assert id1.startswith("source1:")
         assert id2.startswith("source2:")
+
+
+class TestCreateChunkIdWithDelimiter:
+    """Tests for IdGenerator.create_chunk_id method with delimiter enabled (collision-resistant mode)."""
+
+    def test_create_chunk_id_basic(self, default_id_gen_with_delimiter):
+        """Test basic chunk ID creation with delimiter."""
+        source_id = "aws::12345678:abcd"
+        text = "Hello world"
+        metadata = "test_metadata"
+
+        chunk_id = default_id_gen_with_delimiter.create_chunk_id(source_id, text, metadata)
+
+        assert chunk_id.startswith(source_id + ":")
+        assert len(chunk_id) == len(source_id) + 1 + 8  # source_id:8_char_hash
+
+    def test_create_chunk_id_deterministic(self, default_id_gen_with_delimiter):
+        """Test that same inputs produce same chunk ID."""
+        source_id = "aws::12345678:abcd"
+        text = "Hello world"
+        metadata = "test_metadata"
+
+        id1 = default_id_gen_with_delimiter.create_chunk_id(source_id, text, metadata)
+        id2 = default_id_gen_with_delimiter.create_chunk_id(source_id, text, metadata)
+
+        assert id1 == id2
+
+    def test_create_chunk_id_no_boundary_collision(self, default_id_gen_with_delimiter):
+        """
+        Test that different (text, metadata) pairs with same concatenation don't collide.
+
+        This is a regression test for issue #107:
+        Previously, ("hello", "world") and ("hell", "oworld") would both hash
+        "helloworld" and produce identical IDs. With the delimiter fix, they
+        should produce different IDs.
+        """
+        source_id = "aws::12345678:abcd"
+
+        # These would collide without a delimiter: "hello" + "world" = "helloworld"
+        id1 = default_id_gen_with_delimiter.create_chunk_id(source_id, "hello", "world")
+
+        # This would also produce "helloworld" without delimiter
+        id2 = default_id_gen_with_delimiter.create_chunk_id(source_id, "hell", "oworld")
+
+        # With the fix, they should be different
+        assert id1 != id2, (
+            "Chunk IDs should differ for ('hello', 'world') vs ('hell', 'oworld'). "
+            "Boundary collision detected - this means the delimiter fix is not working."
+        )
+
+    def test_create_chunk_id_boundary_collision_more_cases(self, default_id_gen_with_delimiter):
+        """Test additional boundary collision cases with delimiter enabled."""
+        source_id = "aws::12345678:abcd"
+
+        # Test various boundary shift patterns
+        test_cases = [
+            (("abc", "def"), ("ab", "cdef")),
+            (("abc", "def"), ("abcd", "ef")),
+            (("", "abcdef"), ("abc", "def")),
+            (("abcdef", ""), ("abc", "def")),
+            (("a", "bcdef"), ("abcde", "f")),
+        ]
+
+        for (text1, meta1), (text2, meta2) in test_cases:
+            id1 = default_id_gen_with_delimiter.create_chunk_id(source_id, text1, meta1)
+            id2 = default_id_gen_with_delimiter.create_chunk_id(source_id, text2, meta2)
+            assert id1 != id2, (
+                f"Boundary collision: ({text1!r}, {meta1!r}) vs ({text2!r}, {meta2!r})"
+            )
+
+    def test_create_chunk_id_empty_strings(self, default_id_gen_with_delimiter):
+        """Test chunk ID creation with empty strings with delimiter."""
+        source_id = "aws::12345678:abcd"
+
+        # Empty text
+        id1 = default_id_gen_with_delimiter.create_chunk_id(source_id, "", "metadata")
+        assert id1.startswith(source_id + ":")
+
+        # Empty metadata
+        id2 = default_id_gen_with_delimiter.create_chunk_id(source_id, "text", "")
+        assert id2.startswith(source_id + ":")
+
+        # Both should be different (delimiter separates them)
+        assert id1 != id2
+
+    def test_create_chunk_id_different_source_ids(self, default_id_gen_with_delimiter):
+        """Test that different source IDs produce different chunk IDs."""
+        text = "Hello world"
+        metadata = "test_metadata"
+
+        id1 = default_id_gen_with_delimiter.create_chunk_id("source1", text, metadata)
+        id2 = default_id_gen_with_delimiter.create_chunk_id("source2", text, metadata)
+
+        assert id1 != id2
+        assert id1.startswith("source1:")
+        assert id2.startswith("source2:")
+
+
+class TestDelimiterModeComparison:
+    """Tests comparing behavior between delimiter and non-delimiter modes."""
+
+    def test_same_inputs_different_modes_different_ids(self, default_id_gen, default_id_gen_with_delimiter):
+        """
+        Test that the same inputs produce different IDs in different modes.
+
+        This ensures that enabling the delimiter actually changes the hash output,
+        which is necessary for fixing boundary collisions.
+        """
+        source_id = "aws::12345678:abcd"
+        text = "hello"
+        metadata = "world"
+
+        id_without_delimiter = default_id_gen.create_chunk_id(source_id, text, metadata)
+        id_with_delimiter = default_id_gen_with_delimiter.create_chunk_id(source_id, text, metadata)
+
+        # Different modes should produce different IDs for the same input
+        assert id_without_delimiter != id_with_delimiter, (
+            "Enabling delimiter should change the hash output for the same input. "
+            "This difference is expected and ensures collision-resistant hashing."
+        )
 
 
 class TestCreateSourceId:
